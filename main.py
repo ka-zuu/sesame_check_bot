@@ -95,8 +95,8 @@ async def get_sesame_status(session: aiohttp.ClientSession, device_id: str) -> O
     """指定されたSesameデバイスの状態を取得します。"""
     url = f"{SESAME_API_BASE_URL}/{device_id}"
     try:
-        # デバッグ: 実際にリクエストが送信される直前のURLとヘッダーを確認
-        logging.info(f"Requesting status for {device_id} with headers: {session.headers}")
+        # デバッグ用にリクエスト情報をDEBUGレベルで出力
+        logging.debug(f"Requesting status for {device_id}")
         async with session.get(url) as response:
             if response.status == 200:
                 return await response.json()
@@ -169,8 +169,8 @@ class SesameBot(discord.Client):
         # セッション作成時に共通のヘッダーを設定する
         # これにより、各API呼び出しでヘッダーを都度設定する必要がなくなる
         headers = {"x-api-key": SESAME_API_KEY}
-        # デバッグ用に、実際に設定されるヘッダーをログに出力
-        logging.info(f"aiohttpセッションに設定するヘッダー: {headers}")
+        # デバッグ用に、実際に設定されるヘッダーをDEBUGレベルでログに出力
+        logging.debug(f"aiohttpセッションに設定するヘッダー: {headers}")
         self.http_session = aiohttp.ClientSession(headers=headers)
         self.check_sesame_status.start()
 
@@ -245,6 +245,11 @@ class SesameBot(discord.Client):
             logging.warning("編集しようとした元のメッセージが見つかりませんでした。")
         except discord.errors.Forbidden:
             logging.error("メッセージを編集する権限がありません。")
+
+        # このインタラクションが最後の通知メッセージに対するものだった場合、
+        # IDをリセットして次の通知を送れるようにする
+        if interaction.message and self.last_notification_message_id == interaction.message.id:
+            self.last_notification_message_id = None
 
     @tasks.loop(seconds=CHECK_INTERVAL_SECONDS)
     async def check_sesame_status(self):
