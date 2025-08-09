@@ -162,8 +162,6 @@ class SesameBot(discord.Client):
     def __init__(self, *, intents: discord.Intents):
         super().__init__(intents=intents)
         self.http_session: Optional[aiohttp.ClientSession] = None
-        # 最後に通知したメッセージを管理するための辞書
-        self.last_notification_message_id: Optional[int] = None
 
     async def setup_hook(self) -> None:
         """ボットの初期化処理 (on_readyの前に呼ばれる)"""
@@ -237,16 +235,6 @@ class SesameBot(discord.Client):
                 response_message += f"❌ **{', '.join(failed_devices)}** の施錠に失敗しました。\n"
             await interaction.followup.send(response_message.strip(), ephemeral=True)
 
-        # 元のメッセージのボタンを無効化する
-        try:
-            disabled_view = discord.ui.View(timeout=None)
-            disabled_view.add_item(discord.ui.Button(label="すべて施錠", style=discord.ButtonStyle.danger, custom_id="lock_all", disabled=True))
-            await interaction.message.edit(view=disabled_view)
-        except discord.errors.NotFound:
-            logging.warning("編集しようとした元のメッセージが見つかりませんでした。")
-        except discord.errors.Forbidden:
-            logging.error("メッセージを編集する権限がありません。")
-
     @tasks.loop(seconds=CHECK_INTERVAL_SECONDS)
     async def check_sesame_status(self):
         """定期的にSesameの状態をチェックし、通知を更新/送信/削除するタスク"""
@@ -273,60 +261,26 @@ class SesameBot(discord.Client):
             logging.warning(f"通知先のチャンネル(ID: {DISCORD_CHANNEL_ID})が見つからないため、処理をスキップします。")
             return
 
-        # --- 通知ロジックの変更 ---
-
-        # Case 1: 解錠中のデバイスが一つもない場合
+        # 解錠中のデバイスがなければ何もしない
         if not unlocked_devices:
-            # 前回の通知メッセージがあれば、それを削除する
-            if self.last_notification_message_id:
-                try:
-                    message = await target_channel.fetch_message(self.last_notification_message_id)
-                    await message.delete()
-                    logging.info(f"すべてのデバイスが施錠されたため、通知メッセージ (ID: {self.last_notification_message_id}) を削除しました。")
-                except discord.errors.NotFound:
-                    pass  # 既に削除されている場合は何もしない
-                except discord.errors.Forbidden:
-                    logging.error("メッセージを削除する権限がありません。")
-                finally:
-                    self.last_notification_message_id = None
             return
 
-        # Case 2: 解錠中のデバイスがある場合
+        # 解錠中のデバイスがあれば、毎回新しい通知を送信する
         if unlocked_devices:
             logging.info(f"解錠されているデバイスを検出: {[d['name'] for d in unlocked_devices]}")
             embed = discord.Embed(
                 title="🔓 解錠されているスマートロックがあります",
-                description="下のボタンを押して、遠隔で施錠できます。",
+                description=f"下のボタンを押して、遠隔で施錠できます。\n(チェック時刻: {time.strftime('%H:%M:%S')})",
                 color=discord.Color.red()
             )
-            embed.set_footer(text=f"最終更新: {time.strftime('%Y-%m-%d %H:%M:%S')}")
             for device in unlocked_devices:
                 embed.add_field(name="デバイス名", value=f"**{device['name']}**", inline=False)
             
             view = UnlockNotificationView()
-            # 既存の通知メッセージがあれば編集、なければ新規送信
-            if self.last_notification_message_id:
-                try:
-                    message = await target_channel.fetch_message(self.last_notification_message_id)
-                    # 更新時にメンションを付けて通知を飛ばす
-                    content_to_send = DISCORD_MENTION_ON_UPDATE if DISCORD_MENTION_ON_UPDATE else None
-                    await message.edit(content=content_to_send, embed=embed, view=view)
-                    log_msg = f"通知メッセージ (ID: {self.last_notification_message_id}) を更新しました。"
-                    logging.info(log_msg + (f" メンション: '{content_to_send}'" if content_to_send else ""))
-                except discord.errors.NotFound:
-                    self.last_notification_message_id = None  # 見つからなければリセットして新規送信へ
-                except discord.errors.Forbidden:
-                    logging.error("メッセージを編集する権限がありません。")
-                    self.last_notification_message_id = None  # エラーが続くのを防ぐ
-
-            # 新規送信が必要な場合
-            if not self.last_notification_message_id:
-                try:
-                    # 新規作成時はメンションを付けない
-                    message = await target_channel.send(embed=embed, view=view)
-                    self.last_notification_message_id = message.id
-                except discord.errors.Forbidden:
-                    logging.error(f"チャンネル(ID: {DISCORD_CHANNEL_ID})へのメッセージ送信権限がありません。")
+            try:
+                await target_channel.send(embed=embed, view=view)
+            except discord.errors.Forbidden:
+                logging.error(f"チャンネル(ID: {DISCORD_CHANNEL_ID})へのメッセージ送信権限がありません。")
 
     @check_sesame_status.before_loop
     async def before_check_sesame_status(self):
