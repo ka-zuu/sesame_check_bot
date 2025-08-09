@@ -187,11 +187,11 @@ class SesameBot(discord.Client):
         if interaction.type != discord.InteractionType.component or interaction.data.get("custom_id") != "lock_all":
             return
 
-        # ボタンを押したユーザーに即時応答し、処理中であることを示す
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        # 応答を遅延させて、タイムアウトを防ぐ
+        await interaction.response.defer()
 
         # ボタンが押された時点で、再度解錠中のデバイスを確認する
-        logging.info("「すべて施錠」ボタンが押されました。解錠中のデバイスを再チェックします。")
+        logging.info(f"「すべて施錠」ボタンが {interaction.user} によって押されました。解錠中のデバイスを再チェックします。")
         status_tasks = [get_sesame_status(self.http_session, dev_id) for dev_id in SESAME_DEVICE_IDS]
         results = await asyncio.gather(*status_tasks)
 
@@ -207,8 +207,26 @@ class SesameBot(discord.Client):
                         "secret": device_config.get("secret")
                     })
 
+        # 新しいViewを作成（ボタンを無効化するため）
+        new_view = discord.ui.View(timeout=86400) # 元のタイムアウトを維持
+
         if not unlocked_devices_to_lock:
-            await interaction.followup.send("✅ すべてのデバイスは既に施錠されていました。", ephemeral=True)
+            # すでに施錠済みの場合
+            new_view.add_item(discord.ui.Button(
+                label="すべて施錠済み",
+                style=discord.ButtonStyle.success,
+                disabled=True
+            ))
+            
+            new_embed = discord.Embed(
+                title="✅ すべて施錠済み",
+                description=f"確認したところ、すべてのデバイスは既に施錠されていました。",
+                color=discord.Color.green()
+            )
+            new_embed.set_footer(text=f"確認者: {interaction.user.display_name}")
+            
+            await interaction.message.edit(embed=new_embed, view=new_view)
+
         else:
             # 解錠中のデバイスをすべて施錠する
             lock_tasks = [
@@ -225,15 +243,37 @@ class SesameBot(discord.Client):
                     success_devices.append(device_name)
                 else:
                     failed_devices.append(device_name)
-
-            # 応答メッセージの作成
-            response_message = ""
+            
+            response_parts = []
             if success_devices:
-                response_message += f"✅ **{', '.join(success_devices)}** を施錠しました。\n"
+                response_parts.append(f"✅ **{', '.join(success_devices)}** を施錠しました。")
                 logging.info(f"{interaction.user} が {', '.join(success_devices)} を施錠しました。")
             if failed_devices:
-                response_message += f"❌ **{', '.join(failed_devices)}** の施錠に失敗しました。\n"
-            await interaction.followup.send(response_message.strip(), ephemeral=True)
+                response_parts.append(f"❌ **{', '.join(failed_devices)}** の施錠に失敗しました。")
+            
+            response_message = "\n".join(response_parts)
+
+            new_embed = discord.Embed(
+                title="施錠処理完了",
+                description=response_message,
+                color=discord.Color.green() if not failed_devices else discord.Color.orange()
+            )
+            new_embed.set_footer(text=f"操作者: {interaction.user.display_name}")
+
+            if not failed_devices:
+                button_label = "施錠されています"
+                button_style = discord.ButtonStyle.success
+            else:
+                button_label = "一部施錠失敗"
+                button_style = discord.ButtonStyle.danger
+
+            new_view.add_item(discord.ui.Button(
+                label=button_label,
+                style=button_style,
+                disabled=True
+            ))
+
+            await interaction.message.edit(embed=new_embed, view=new_view)
 
     @tasks.loop(seconds=CHECK_INTERVAL_SECONDS)
     async def check_sesame_status(self):
