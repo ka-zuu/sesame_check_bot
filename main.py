@@ -251,9 +251,11 @@ class SesameBot(discord.Client):
         for i, status in enumerate(results):
             if status and status.get("CHSesame2Status") == "unlocked":
                 device_id = SESAME_DEVICE_IDS[i]
+                battery_level = status.get("batteryPercentage", "N/A")
                 unlocked_devices.append({
                     "id": device_id,
-                    "name": DEVICE_CONFIGS.get(device_id, {}).get("name", device_id)
+                    "name": DEVICE_CONFIGS.get(device_id, {}).get("name", device_id),
+                    "battery": battery_level
                 })
 
         target_channel = self.get_channel(DISCORD_CHANNEL_ID)
@@ -270,11 +272,11 @@ class SesameBot(discord.Client):
             logging.info(f"解錠されているデバイスを検出: {[d['name'] for d in unlocked_devices]}")
             embed = discord.Embed(
                 title="🔓 解錠されているスマートロックがあります",
-                description=f"下のボタンを押して、遠隔で施錠できます。\n(チェック時刻: {time.strftime('%H:%M:%S')})",
+                description="下のボタンを押して、遠隔で施錠できます。",
                 color=discord.Color.red()
             )
             for device in unlocked_devices:
-                embed.add_field(name="デバイス名", value=f"**{device['name']}**", inline=False)
+                embed.add_field(name="デバイス名", value=f"**{device['name']}** (バッテリー: {device['battery']}%)", inline=False)
             
             view = UnlockNotificationView()
             try:
