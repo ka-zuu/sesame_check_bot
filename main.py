@@ -32,6 +32,14 @@ CHECK_INTERVAL_SECONDS_STR = os.getenv("CHECK_INTERVAL_SECONDS", "60")
 DISCORD_MENTION_ON_UPDATE = os.getenv("DISCORD_MENTION_ON_UPDATE", "").strip()
 
 # --- 設定値の検証と変換 (強化) ---
+# デコレータが読み込むため、ループ間隔はここで一度変換しておく
+# validate_config で再度チェック・設定される
+try:
+    CHECK_INTERVAL_SECONDS = int(CHECK_INTERVAL_SECONDS_STR)
+except (ValueError, TypeError):
+    logging.warning(f"CHECK_INTERVAL_SECONDS の値 '{CHECK_INTERVAL_SECONDS_STR}' は不正です。デフォルトの60秒を使用します。")
+    CHECK_INTERVAL_SECONDS = 60
+
 def validate_config():
     """起動時に環境変数が正しく設定されているかチェックする関数"""
     logging.info("環境変数の設定をチェックします...")
@@ -84,10 +92,6 @@ def validate_config():
         logging.error(f"環境変数の値の形式に誤りがあります: {e}")
         logging.error("DISCORD_CHANNEL_ID と CHECK_INTERVAL_SECONDS は数値である必要があります。")
         exit(1)
-
-# 起動時に設定を検証
-validate_config()
-
 
 # --- Sesame API 関連 ---
 SESAME_API_BASE_URL = "https://app.candyhouse.co/api/sesame2" # ステータス取得用
@@ -336,6 +340,9 @@ class SesameBot(discord.Client):
         await super().close()
 
 def main():
+    # 起動時に設定を検証
+    validate_config()
+
     # ボットが必要とするIntentsを設定
     intents = discord.Intents.default()
     intents.message_content = False # メッセージ内容の読み取りは不要
