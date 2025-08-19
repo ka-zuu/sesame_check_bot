@@ -166,6 +166,8 @@ class SesameBot(discord.Client):
     def __init__(self, *, intents: discord.Intents):
         super().__init__(intents=intents)
         self.http_session: Optional[aiohttp.ClientSession] = None
+        # 解錠通知メッセージのIDを保持するための変数
+        self.last_notification_message_id: Optional[int] = None
 
     async def setup_hook(self) -> None:
         """ボットの初期化処理 (on_readyの前に呼ばれる)"""
@@ -307,13 +309,16 @@ class SesameBot(discord.Client):
             logging.warning(f"通知先のチャンネル(ID: {DISCORD_CHANNEL_ID})が見つからないため、処理をスキップします。")
             return
 
-        # 解錠中のデバイスがなければ何もしない
-        if not unlocked_devices:
-            return
-
-        # 解錠中のデバイスがあれば、毎回新しい通知を送信する
+        # --- 状態に応じた通知処理 ---
         if unlocked_devices:
+            # ケース1: 解錠中のデバイスが見つかった場合
             logging.info(f"解錠されているデバイスを検出: {[d['name'] for d in unlocked_devices]}")
+
+            # 既に通知済みの場合は、新しい通知は送らない
+            if self.last_notification_message_id:
+                logging.info(f"解錠通知 (ID: {self.last_notification_message_id}) は既に送信済みのため、新しい通知は行いません。")
+                return
+
             embed = discord.Embed(
                 title="🔓 解錠されているスマートロックがあります",
                 description="下のボタンを押して、遠隔で施錠できます。",
@@ -324,9 +329,48 @@ class SesameBot(discord.Client):
             
             view = UnlockNotificationView()
             try:
-                await target_channel.send(embed=embed, view=view)
+                # 新しい通知を送信し、そのIDを保存
+                message = await target_channel.send(embed=embed, view=view)
+                self.last_notification_message_id = message.id
+                logging.info(f"解錠通知を送信しました。メッセージID: {message.id}")
             except discord.errors.Forbidden:
                 logging.error(f"チャンネル(ID: {DISCORD_CHANNEL_ID})へのメッセージ送信権限がありません。")
+
+        elif self.last_notification_message_id:
+            # ケース2: 解錠中のデバイスがなく、かつ前回の通知IDが存在する場合 (施錠されたことを意味する)
+            logging.info(f"すべてのデバイスが施錠されたことを確認しました。通知 (ID: {self.last_notification_message_id}) を更新します。")
+            try:
+                # 対象のメッセージをフェッチ
+                message_to_edit = await target_channel.fetch_message(self.last_notification_message_id)
+
+                # 新しいEmbedとViewを作成
+                new_embed = discord.Embed(
+                    title="✅ すべてのスマートロックが施錠されました",
+                    description="安全な状態です。",
+                    color=discord.Color.green()
+                )
+                new_view = discord.ui.View(timeout=86400) # 元のタイムアウトを維持
+                new_view.add_item(discord.ui.Button(
+                    label="すべて施錠済み",
+                    style=discord.ButtonStyle.success,
+                    disabled=True
+                ))
+
+                # メッセージを編集
+                await message_to_edit.edit(embed=new_embed, view=new_view)
+                logging.info(f"メッセージ (ID: {self.last_notification_message_id}) の更新に成功しました。")
+
+            except discord.errors.NotFound:
+                logging.warning(f"更新対象のメッセージ (ID: {self.last_notification_message_id}) が見つかりませんでした。削除された可能性があります。")
+            except discord.errors.Forbidden:
+                logging.error(f"メッセージ (ID: {self.last_notification_message_id}) の編集権限がありません。")
+            except Exception as e:
+                logging.error(f"メッセージの更新中に予期せぬエラーが発生しました: {e}")
+            finally:
+                # 処理が成功したかどうかにかかわらず、IDをリセットして再試行を防ぐ
+                self.last_notification_message_id = None
+
+        # ケース3: 解錠中のデバイスがなく、通知IDもない場合は何もしない (正常な状態)
 
     @check_sesame_status.before_loop
     async def before_check_sesame_status(self):

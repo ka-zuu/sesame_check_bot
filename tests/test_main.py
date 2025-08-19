@@ -1,6 +1,7 @@
 import pytest
 import logging
 from unittest.mock import patch
+import discord
 
 # --- テスト対象の関数を main.py からインポート ---
 # import時にトップレベルのコードが実行されないように修正済み
@@ -218,3 +219,104 @@ async def test_lock_sesame_api_error(mocker, mock_aiohttp_session):
 
     assert result is False
     logging.error.assert_called_once()
+
+
+# --- Botロジック (check_sesame_status) のテスト ---
+# discord.py のオブジェクトをモックするための準備
+@pytest.fixture
+def mock_bot(mocker):
+    """SesameBot の基本的なモックを返すフィクスチャ"""
+    # botインスタンスのモック
+    bot = mocker.MagicMock()
+    bot.last_notification_message_id = None
+
+    # チャンネルのモック
+    mock_channel = mocker.AsyncMock()
+
+    # メッセージのモック
+    mock_message = mocker.AsyncMock()
+    mock_message.id = 123456789
+
+    # メソッドの関連付け
+    mock_channel.send.return_value = mock_message
+    mock_channel.fetch_message.return_value = mock_message
+
+    # bot.get_channel がモックチャンネルを返すように設定
+    bot.get_channel.return_value = mock_channel
+
+    # http_session のモック
+    bot.http_session = mocker.AsyncMock()
+
+    # タスクループの本体である check_sesame_status を bot にバインド
+    # (実際の bot では tasks.loop がこれを行う)
+    from main import SesameBot
+    bot.check_sesame_status = SesameBot.check_sesame_status.__get__(bot, SesameBot)
+
+    return bot, mock_channel, mock_message
+
+@pytest.mark.asyncio
+async def test_check_sesame_status_sends_notification_when_unlocked(mocker, mock_bot):
+    """解錠時に通知が送信され、メッセージIDが保存されることをテストする"""
+    bot, mock_channel, _ = mock_bot
+
+    # get_sesame_status が「解錠」状態を返すようにパッチ
+    mock_status_unlocked = {"CHSesame2Status": "unlocked", "batteryPercentage": 50}
+    mocker.patch('main.get_sesame_status', return_value=mock_status_unlocked)
+
+    # main.py のグローバル変数を設定
+    mocker.patch('main.SESAME_DEVICE_IDS', ['uuid1'])
+    mocker.patch('main.DEVICE_CONFIGS', {'uuid1': {'name': 'door', 'secret': 'secret1'}})
+    mocker.patch('main.DISCORD_CHANNEL_ID', 987654321)
+
+    # テスト対象の関数を呼び出し
+    await bot.check_sesame_status()
+
+    # アサーション
+    mock_channel.send.assert_called_once()
+    assert bot.last_notification_message_id is not None
+    assert bot.last_notification_message_id == 123456789
+
+    # embed の内容を簡易的にチェック
+    _, kwargs = mock_channel.send.call_args
+    assert 'embed' in kwargs
+    embed = kwargs['embed']
+    assert embed.color == discord.Color.red()
+    assert "解錠されている" in embed.title
+
+@pytest.mark.asyncio
+async def test_check_sesame_status_updates_notification_when_locked(mocker, mock_bot):
+    """施錠された場合に、既存の通知が更新されることをテストする"""
+    bot, mock_channel, mock_message = mock_bot
+
+    # 初期状態: 以前に通知済み
+    bot.last_notification_message_id = 123456789
+
+    # get_sesame_status が「施錠」状態を返すようにパッチ
+    mock_status_locked = {"CHSesame2Status": "locked", "batteryPercentage": 50}
+    mocker.patch('main.get_sesame_status', return_value=mock_status_locked)
+
+    # main.py のグローバル変数を設定
+    mocker.patch('main.SESAME_DEVICE_IDS', ['uuid1'])
+    mocker.patch('main.DISCORD_CHANNEL_ID', 987654321)
+
+    # テスト対象の関数を呼び出し
+    await bot.check_sesame_status()
+
+    # アサーション
+    mock_channel.fetch_message.assert_called_once_with(123456789)
+    mock_message.edit.assert_called_once()
+    assert bot.last_notification_message_id is None # IDがリセットされたか
+
+    # embed の内容を簡易的にチェック
+    _, kwargs = mock_message.edit.call_args
+    assert 'embed' in kwargs
+    embed = kwargs['embed']
+    assert embed.color == discord.Color.green()
+    assert "施錠されました" in embed.title
+
+    # view の内容を簡易的にチェック (ボタンが success style で disabled)
+    assert 'view' in kwargs
+    view = kwargs['view']
+    button = view.children[0]
+    assert button.style == discord.ButtonStyle.success
+    assert button.disabled is True
